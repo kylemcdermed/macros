@@ -1,435 +1,914 @@
 # MACROS
 
-**MACROS** is an experimental quantitative intraday trading framework designed to combine market structure, statistical regime detection, historical pattern similarity, and machine-learning-based feature analysis.
-
-The central research question is:
-
-> Can an hourly structural imbalance, combined with market regime, historical top-of-hour analogues, volatility, volume, and trend characteristics, provide statistically useful information about subsequent intraday price direction and trade outcomes?
+**MACROS** is an experimental quantitative intraday trading framework combining market structure, hourly price imbalances, statistical regime detection, historical analogue matching, and machine-learning-based feature analysis.
 
 The system is currently under active research and development.
 
+Current research performance objectives:
+
+* **Sharpe Ratio:** 3.0–4.0
+* **Minimum Hit-Rate Target:** approximately 60%
+* **Stretch Hit-Rate Goal:** approximately 70%
+* **Position Horizon:** intraday
+* **End-of-Day Exposure:** flat
+
+These figures are research objectives and are not claims of achieved or expected performance.
+
 ---
 
-## Performance Research Objectives
+# 1. Structural Foundation
 
-MACROS is being developed against explicit **out-of-sample research targets** rather than optimizing solely for in-sample profitability.
+MACROS begins with two deterministic structural components:
 
-The current performance objectives are:
+1. **Market Structure Engine**
+2. **Three-Candle Fair Value Gap / Imbalance Engine**
 
-| Metric                      |      Target |
-| --------------------------- | ----------: |
-| **Sharpe Ratio**            | **3.0–4.0** |
-| **Minimum Target Hit Rate** |     **60%** |
-| **Goal Hit Rate**           |     **70%** |
-| **Holding Period**          |    Intraday |
-| **Position at EOD**         |        Flat |
-| **Overnight Exposure**      |        None |
+Both concepts currently exist as TradingView PineScript indicators and will be rewritten into the research environment.
 
-The primary objective is to investigate whether the complete MACROS framework can produce a **3–4 Sharpe ratio** while maintaining a minimum directional/trade hit rate of approximately **60%**, with a stretch objective of approximately **70%**.
-
-These figures represent **research targets, not historical or expected performance**. They must ultimately be demonstrated through chronological out-of-sample and walk-forward testing after accounting for transaction costs, fees, slippage, and realistic execution assumptions.
-
-### Day-over-Day Stability
-
-A secondary objective is **DoD (day-over-day) consistency**.
-
-The research will therefore evaluate not only aggregate hit rate and Sharpe ratio, but also the stability of performance across individual trading days, market regimes, volatility environments, and time-of-day segments.
-
-The goal is not simply to achieve a high aggregate backtest hit rate. MACROS should investigate whether its edge remains sufficiently stable as market conditions evolve.
+The Python/C++ implementation must preserve the temporal behavior of the PineScript implementations and must not use future information that would not have been available at the original decision timestamp.
 
 ```text
-                    MACROS TARGETS
-                          │
-          ┌───────────────┼───────────────┐
-          ▼               ▼               ▼
-       SHARPE          HIT RATE       STABILITY
-       3.0–4.0            │              DoD
-                          │
-                    ≥60% Target
-                          │
-                     70% Goal
+MARKET DATA
+     │
+     ▼
+MARKET STRUCTURE ENGINE
+HH / HL / LH / LL
+     │
+     ▼
+STRUCTURAL LEVEL
+     │
+     ▼
+THREE-CANDLE FVG
+     │
+     ▼
+Does imbalance form relative
+to qualifying market structure?
+     │
+     ▼
+MACROS TRADE CANDIDATE
 ```
 
 ---
 
-## Core Trading Hypothesis
+# 2. Market Structure Engine
 
-MACROS begins with a structural market event: a **three-candle Fair Value Gap (FVG) / price imbalance**.
+MACROS uses a stateful market-structure algorithm to identify:
 
-A qualifying imbalance must form in association with a **Short-Term High (STH)** or **Short-Term Low (STL)**.
+```text
+HH = Higher High
+HL = Higher Low
+LH = Lower High
+LL = Lower Low
+```
+
+The current PineScript implementation uses confirmed pivots with:
+
+```text
+leftLen  = 20
+rightLen = 2
+```
+
+A pivot high is generated conceptually from:
+
+```text
+ta.pivothigh(high, 20, 2)
+```
+
+and a pivot low from:
+
+```text
+ta.pivotlow(low, 20, 2)
+```
+
+This is an important temporal constraint.
+
+A pivot occurring at bar \(t\) cannot be considered known at bar \(t\).
+
+Because:
+
+```text
+rightLen = 2
+```
+
+the structural pivot only becomes confirmed after two subsequent bars have been observed.
 
 Conceptually:
 
-* Bullish opportunities are associated with an imbalance forming around/beyond a relevant short-term low.
-* Bearish opportunities are associated with an imbalance forming around/beyond a relevant short-term high.
-* New qualifying imbalances are evaluated on an hourly basis.
-* Valid hourly imbalances can be carried forward as potential entry zones until they are triggered, invalidated, expire, or the trading session ends.
+```text
+               candidate pivot
+                     │
+                     ▼
 
-The structural imbalance generates the **trade candidate**. The quantitative models provide context for deciding whether that candidate has favorable characteristics.
+t-20 ............... t ...... t+1 ...... t+2
+                              │           │
+                              │           ▼
+                              │      PIVOT KNOWN
+                              │
+                        still unconfirmed
+```
+
+Therefore:
+
+$$
+KnowledgeTime(Pivot_t)=t+2
+$$
+
+for the current `rightLen = 2` configuration.
+
+The rewritten research implementation must preserve this confirmation delay.
 
 ---
 
-## Model Architecture
+# 3. Structure Initialization
+
+Before MACROS assigns a market trend, the engine waits until both:
+
+* a confirmed pivot high has been observed;
+* a confirmed pivot low has been observed.
+
+The chronological order of those first pivots determines the initial structural interpretation.
+
+If the first confirmed high precedes the first confirmed low:
 
 ```text
-                    MARKET DATA
-                         │
-                         ▼
-              FVG + STH/STL ENGINE
-                         │
-                         ▼
-                 TRADE CANDIDATE
-                         │
-          ┌──────────────┼──────────────┐
-          │              │              │
-          ▼              ▼              ▼
-    30-Minute HMM   Weighted kNN    Feature Engine
-      Regimes       xx:50→xx:10          │
-          │              │               │
-          │              │       ┌───────┴────────┐
-          │              │       │                │
-          │              │   Volatility         Volume
-          │              │       │                │
-          │              │       └───────┬────────┘
-          │              │               │
-          │              │      Linear Regression
-          │              │               │
-          └──────────────┼───────────────┘
-                         ▼
-                       XGBoost
-                         │
-                         ▼
-                   TRADE / PASS
-                         │
-                         ▼
-                    RISK ENGINE
-                         │
-                 ┌───────┼───────┐
-                 ▼       ▼       ▼
-                TP      SL      EOD
+High first
+    ↓
+   LH
+    \
+     \
+      LL
+
+Initial interpretation:
+DOWNTREND
+```
+
+The engine initializes:
+
+```text
+structLH
+structLL
+```
+
+with:
+
+```text
+lastStructure = "LL"
+```
+
+If the first confirmed low precedes the first confirmed high:
+
+```text
+      HH
+     /
+    /
+   HL
+    ↑
+Low first
+
+Initial interpretation:
+UPTREND
+```
+
+The engine initializes:
+
+```text
+structHL
+structHH
+```
+
+with:
+
+```text
+lastStructure = "HH"
 ```
 
 ---
 
-## Hidden Markov Model — Market Regime
+# 4. Uptrend Structure Logic
 
-MACROS will investigate a **Hidden Markov Model (HMM)** for estimating latent market regimes using **30-minute observation windows**.
-
-Potential initial states include:
-
-$$
-Z_t \in \{Bullish,\ Bearish,\ Range\}
-$$
-
-The HMM estimates probabilities such as:
-
-$$
-P(Z_t = Bullish \mid X_{1:t})
-$$
-
-and transition probabilities:
-
-$$
-P(Z_{t+1}\mid Z_t)
-$$
-
-The HMM is therefore intended primarily as a **market-regime/context layer**, rather than as the entry mechanism itself.
-
----
-
-## Weighted kNN — Historical Analogue Model
-
-Weighted k-Nearest Neighbors will investigate the behavior of historical markets surrounding each top-of-hour transition.
-
-Each observation window covers:
-
-$$
-xx{:}50 \rightarrow xx{:}10
-$$
-
-For example:
+The market is treated as structurally bullish when:
 
 ```text
-09:50 -------- 10:00 -------- 10:10
-      PRE-HOUR       POST-HOUR
-        10m              10m
+lastStructure == HH
 ```
-
-The research question is:
-
-> Given what the market has done from `xx:50 → xx:10`, what happened subsequently during historically similar observations?
-
-Potential features include:
-
-* Pre-hour return
-* Post-hour return
-* Pre-hour range
-* Post-hour range
-* Total range
-* High extension
-* Low extension
-* Closing location
-* Range expansion/contraction
-* Directional efficiency
-* Session location
-* Volatility
-* Volume
-* Regression characteristics
-
-Closer historical observations receive greater influence:
-
-$$
-w_i=\frac{1}{d_i+\epsilon}
-$$
-
-Potential outputs include:
-
-* \(P(Up)\)
-* \(P(Down)\)
-* Expected forward return
-* Median forward return
-* Neighbor dispersion
-* Maximum Favorable Excursion (MFE)
-* Maximum Adverse Excursion (MAE)
-
----
-
-## XGBoost Feature Research
-
-The initial core \(X\) feature families are:
-
-### Volatility
-
-* Realized volatility
-* ATR
-* Rolling standard deviation
-* Range-normalized volatility
-* Volatility expansion/contraction
-
-### Volume
-
-* Absolute volume
-* Relative volume
-* Rolling volume
-* Volume ratios
-* Volume associated with displacement/FVG formation
-
-### Linear Regression
-
-* Regression slope
-* \(R^2\)
-* Regression residual
-* Standardized residual
-* Distance from fitted trend
-* Change in slope
-
-Additional research may incorporate:
-
-* FVG characteristics
-* STH/STL characteristics
-* HMM state probabilities
-* kNN probabilities
-* kNN expected returns
-* kNN MFE/MAE
-* Session location
-* Time-of-day information
-
-XGBoost and SHAP analysis will be used to investigate which features and feature interactions provide meaningful predictive information.
-
----
-
-## Target Variable Research
-
-The supervised-learning target \(Y\) remains an experimental design decision.
-
-One primary candidate is:
-
-$$
-Y =
-\begin{cases}
-1,& \text{TP reached before SL}\\
-0,& \text{SL reached before TP}
-\end{cases}
-$$
-
-Alternative experiments may predict:
-
-$$
-Y=r_{forward}
-$$
 
 or:
 
+```text
+lastStructure == HL
+```
+
+The active structural boundaries are:
+
+```text
+structHH = current structural high
+structHL = current structural low
+```
+
+Conceptually:
+
+```text
+                     structHH
+                        ●
+                       / \
+                      /   \
+                     /     \
+                    /       \
+                   ●         \
+              structHL        \
+```
+
+Two important events can occur.
+
+## 4.1 Break Above Structural High
+
+If:
+
 $$
-Y\in\{Up,Down,Flat\}
+High_t > structHH
 $$
 
-These alternatives will be compared using chronological out-of-sample testing.
+a potential new **Higher High** is detected.
+
+The engine does not immediately accept the new HH.
+
+Instead:
+
+```text
+pendingType = HH
+waitingForConfirmation = true
+```
+
+The system waits for a confirmed pivot high.
+
+Once that pivot is confirmed, the structure becomes:
+
+```text
+previous HH
+      │
+      │            NEW HH
+      │              ●
+      │             / \
+      ●            /   \
+       \          /
+        \        /
+         ●──────
+       NEW HL
+```
+
+The lowest low between the previous HH and the new high sequence is identified as the new:
+
+```text
+HL
+```
+
+The newly confirmed pivot becomes:
+
+```text
+HH
+```
+
+The market therefore continues its bullish structure:
+
+$$
+HL \rightarrow HH
+$$
 
 ---
 
-## Risk and Exit Research
+# 5. Bullish-to-Bearish Structure Transition
 
-Several approaches will be compared.
-
-### Range + Volatility Barriers
-
-Using the `xx:50 → xx:10` range:
+While in an uptrend, if:
 
 $$
-R=H-L
+Low_t < structHL
 $$
 
-potential barriers can be constructed using volatility:
+the active bullish structural low has been violated.
+
+The engine enters:
+
+```text
+pendingType = LL
+waitingForConfirmation = true
+```
+
+It waits for a confirmed pivot low.
+
+Once confirmed:
+
+```text
+previous HH
+     ●
+      \
+       \
+        \
+---------X--------- previous HL broken
+          \
+           \
+            ●
+           NEW LL
+```
+
+The previous structural HH becomes the new:
+
+```text
+LH
+```
+
+and the confirmed lower pivot becomes:
+
+```text
+LL
+```
+
+The state changes to:
+
+```text
+DOWNTREND
+```
+
+---
+
+# 6. Downtrend Structure Logic
+
+The market is treated as structurally bearish when:
+
+```text
+lastStructure == LL
+```
+
+or:
+
+```text
+lastStructure == LH
+```
+
+The active structural boundaries are:
+
+```text
+structLH = current structural high
+structLL = current structural low
+```
+
+Conceptually:
+
+```text
+         structLH
+             ●
+              \
+               \
+                \
+                 ●
+              structLL
+```
+
+## 6.1 Break Below Structural Low
+
+If:
 
 $$
-SL=L-k_{SL}\sigma
+Low_t < structLL
 $$
 
+the system detects a potential new Lower Low.
+
+It enters:
+
+```text
+pendingType = LL
+```
+
+and waits for a confirmed pivot low.
+
+Once confirmed, the highest high between the previous LL and the new LL sequence becomes the new:
+
+```text
+LH
+```
+
+and the confirmed pivot becomes the new:
+
+```text
+LL
+```
+
+Conceptually:
+
+```text
+          NEW LH
+             ●
+            / \
+           /   \
+old LL   ●     \
+                \
+                 ●
+               NEW LL
+```
+
+The bearish structure therefore continues:
+
 $$
-TP=H+k_{TP}\sigma
+LH \rightarrow LL
 $$
 
-### Entry-Centered Volatility Barriers
+---
+
+# 7. Bearish-to-Bullish Structure Transition
+
+While bearish, if:
 
 $$
-SL=Entry-k_{SL}\sigma
+High_t > structLH
 $$
 
+the active structural high has been violated.
+
+The engine begins waiting for confirmation of a Higher High.
+
+After a valid pivot-high confirmation:
+
+```text
+                 NEW HH
+                    ●
+                   /
+                  /
+---------X-------/
+   previous LH broken
+        /
+       ●
+ previous LL
+```
+
+The previous LL becomes the structural:
+
+```text
+HL
+```
+
+and the confirmed high becomes:
+
+```text
+HH
+```
+
+The state therefore transitions back into:
+
+```text
+UPTREND
+```
+
+---
+
+# 8. Stateful Structure Machine
+
+The market-structure component can therefore be represented as a state machine:
+
+```text
+                    break HH
+          ┌────────────────────────┐
+          │                        ▼
+      ┌────────┐               ┌────────┐
+      │   HH   │◄──────────────│   HL   │
+      └────┬───┘               └────────┘
+           │
+           │ break HL
+           ▼
+      pending LL
+           │
+           │ pivot confirmation
+           ▼
+      ┌────────┐
+      │   LL   │
+      └────┬───┘
+           │
+           │ continuation
+           ▼
+      ┌────────┐
+      │   LH   │
+      └────┬───┘
+           │
+           │ break LH
+           ▼
+      pending HH
+           │
+           │ pivot confirmation
+           └──────────────► HH
+```
+
+The production/research rewrite should preserve the state-machine behavior rather than implementing HH/HL/LH/LL as independent labels.
+
+---
+
+# 9. Structural Levels Used by MACROS
+
+For MACROS research, the structure engine exposes two broad categories of levels:
+
+### Structural High
+
+A confirmed structural high may correspond to:
+
+```text
+HH
+or
+LH
+```
+
+### Structural Low
+
+A confirmed structural low may correspond to:
+
+```text
+HL
+or
+LL
+```
+
+These levels become reference points for determining whether a qualifying FVG has formed in the required structural location.
+
+The exact MACROS entry relationship between these structural levels and the FVG should remain explicit and testable.
+
+Potential event fields include:
+
+```text
+structure_state
+structure_level_type
+structure_level_price
+structure_level_timestamp
+structure_confirmation_timestamp
+
+previous_hh
+previous_hl
+previous_lh
+previous_ll
+
+fvg_distance_from_structure
+structure_age_bars
+structure_age_time
+structure_swept
+```
+
+---
+
+# 10. Fair Value Gap / Imbalance Engine
+
+MACROS uses a three-candle Fair Value Gap.
+
+For:
+
 $$
-TP=Entry+k_{TP}\sigma
+C_{t-2},C_{t-1},C_t
 $$
 
-### Fixed Percentage Barriers
-
-The original research hypothesis also includes fixed percentage barriers around entry, including approximately **±1.5%**.
-
-### kNN-Conditioned MFE/MAE
-
-Historical nearest neighbors may additionally provide empirical distributions of:
+a bullish FVG exists when:
 
 $$
-MFE
+High_{t-2}<Low_t
 $$
 
 and:
 
 $$
-MAE
+Low_t-High_{t-2}>MinimumGap
 $$
 
-which can potentially inform dynamically conditioned stop-loss and take-profit placement.
-
----
-
-## Position Management
-
-Every qualifying hourly imbalance may be carried forward as an active trade candidate.
-
-Potential approaches include:
-
-* One position maximum
-* Multiple simultaneous hourly positions
-* Pyramiding
-* Confidence-weighted target exposure
-
-The initial research implementation will favor **one open position at a time** to isolate the underlying signal's behavior.
-
----
-
-## End-of-Day Risk Rule
-
-MACROS is an intraday framework.
-
-Every trade must terminate through:
+A bearish FVG exists when:
 
 $$
-Exit\in\{TP,\ SL,\ EOD\}
+Low_{t-2}>High_t
 $$
 
-Any remaining open position is flattened before the market close.
+and:
 
-No intentional overnight exposure is maintained.
+$$
+Low_{t-2}-High_t>MinimumGap
+$$
 
----
+The existing PineScript optionally incorporates:
 
-## Validation
+* ATR-adjusted minimum gap size
+* volume filters
+* buy/sell volume approximation
+* EMA filtering
+* FVG persistence
+* FVG fill/invalidation detection
 
-MACROS will use chronological **walk-forward validation** rather than relying on random train/test splits.
-
-Evaluation will include:
-
-* Sharpe ratio
-* Hit rate
-* Expectancy
-* Profit factor
-* Maximum drawdown
-* Average winner / loser
-* MFE / MAE
-* Probability calibration
-* Performance by hour
-* Performance by HMM regime
-* Performance by volatility regime
-* Performance by kNN confidence
-* Performance by XGBoost confidence
-* **Day-over-day performance stability**
-
-All features, normalization, regime estimation, neighbor selection, and model predictions must use only information available at the decision timestamp.
+The original PineScript implementation should be treated as the behavioral reference when rewriting this component.
 
 ---
 
-## Ablation Testing
+# 11. MACROS Structural Entry Event
 
-Each component must demonstrate incremental out-of-sample value.
+The important distinction is:
 
 ```text
-FVG
- ↓
-FVG + STH/STL
- ↓
-+ HMM
- ↓
-+ weighted kNN
- ↓
-+ XGBoost
- ↓
-FULL MACROS
+FVG != automatically a MACROS trade
 ```
 
-The objective is not to maximize model complexity. The objective is to determine whether each additional component produces measurable improvements in **risk-adjusted out-of-sample performance**.
-
----
-
-## Research Targets
+Instead:
 
 ```text
-Sharpe Ratio
-    │
-    └────── TARGET: 3.0–4.0
-
-Hit Rate
-    │
-    ├────── MINIMUM TARGET: ~60%
-    │
-    └────── STRETCH GOAL:   ~70%
-
-Consistency
-    │
-    └────── Day-over-Day stability
-
-Exposure
-    │
-    └────── Intraday only / Flat EOD
+Market Structure
+      +
+Qualifying FVG
+      =
+MACROS Candidate
 ```
 
-These are **objectives for the research process and are not claims of achieved performance**.
+Conceptually:
+
+```text
+             STRUCTURAL HIGH
+                   ●
+───────────────────┼──────────────────
+                   │
+                   │ price interaction
+                   │
+                   ▼
+              displacement
+                   │
+              3-candle FVG
+                   │
+                   ▼
+            MACROS CANDIDATE
+```
+
+and symmetrically around structural lows.
+
+The event detector must preserve:
+
+1. the structural level available at that timestamp;
+2. when that level became known;
+3. the FVG formation timestamp;
+4. the spatial relationship between FVG and structure;
+5. the direction of the setup.
+
+This information must be stored rather than inferred retrospectively.
 
 ---
 
-## Status
+# 12. Persistent Hourly Imbalances
 
-🚧 **Active Quantitative Research / Work in Progress**
+Qualifying imbalances are not necessarily discarded when the hour ends.
 
-MACROS currently represents a working research hypothesis. Model architecture, feature definitions, targets, risk parameters, and execution rules remain subject to empirical testing.
+A valid imbalance may be carried forward as an active potential entry.
 
-The project will prioritize **out-of-sample robustness, DoD consistency, statistical significance, realistic execution assumptions, and reproducibility** over optimized in-sample performance.
+Example:
+
+```text
+10:00 FVG ────────────────────────────────►
+               still active
+
+11:00 FVG       ──────────────────────────►
+                     still active
+
+12:00 FVG               ──────────────────►
+```
+
+Each active imbalance should therefore have a lifecycle.
+
+Potential state:
+
+```text
+CREATED
+   ↓
+ACTIVE
+   ↓
+├── TOUCHED
+├── ENTERED
+├── INVALIDATED
+├── EXPIRED
+└── EOD_CLOSED
+```
+
+The exact lifecycle rules remain part of the research specification.
+
+---
+
+# 13. Quantitative Context
+
+Once a valid structural MACROS event exists, additional models provide context.
+
+```text
+                MACROS EVENT
+                     │
+         ┌───────────┼───────────┐
+         ▼           ▼           ▼
+        HMM      Weighted kNN   XGBoost
+         │           │           │
+         └───────────┼───────────┘
+                     ▼
+                TRADE / PASS
+```
+
+## HMM
+
+30-minute observations estimate latent market regime probabilities.
+
+Initial conceptual states:
+
+$$
+Z_t\in\{Bull,Bear,Range\}
+$$
+
+## Weighted kNN
+
+Historical analogue analysis uses:
+
+$$
+xx{:}50\rightarrow xx{:}10
+$$
+
+to compare current top-of-hour behavior against historically similar observations.
+
+## XGBoost
+
+Initial core input feature families include:
+
+* Volatility
+* Volume
+* Linear-regression-derived characteristics
+
+Potential later features include outputs from:
+
+* Market structure
+* FVG engine
+* HMM
+* Weighted kNN
+
+---
+
+# 14. No-Look-Ahead Requirement
+
+This is a core requirement of MACROS.
+
+The system must distinguish between:
+
+```text
+EVENT TIME
+```
+
+and:
+
+```text
+KNOWLEDGE / CONFIRMATION TIME
+```
+
+For example, with:
+
+```text
+rightLen = 2
+```
+
+a pivot may geometrically occur at:
+
+```text
+10:00
+```
+
+but not become known until two bars later.
+
+The research system cannot act as though the pivot was known at 10:00.
+
+Instead it should store something equivalent to:
+
+```text
+pivot_time          = 10:00
+confirmation_time   = 10:02
+```
+
+assuming a one-minute structural timeframe.
+
+Any MACROS decision occurring before the confirmation timestamp cannot use that pivot.
+
+The same principle applies throughout:
+
+```text
+NO future pivots
+NO future normalization
+NO future neighbors
+NO future HMM observations
+NO future regression values
+NO future FVG information
+NO target leakage
+```
+
+---
+
+# 15. Event Dataset Additions
+
+The Phase 1 event dataset should now include explicit market-structure information.
+
+At minimum:
+
+```text
+event_id
+timestamp
+symbol
+direction
+
+fvg_upper
+fvg_lower
+fvg_size
+fvg_formed_at
+
+structure_state
+structure_level_type
+structure_level_price
+structure_pivot_time
+structure_confirmation_time
+structure_age
+structure_distance
+structure_swept
+
+volatility
+volume
+
+linreg_slope
+linreg_r2
+linreg_residual
+
+window_high
+window_low
+window_return
+
+entry_price
+
+forward_return
+mfe
+mae
+
+tp_hit
+sl_hit
+eod_return
+```
+
+The distinction between:
+
+```text
+structure_pivot_time
+```
+
+and:
+
+```text
+structure_confirmation_time
+```
+
+is particularly important for validating that the backtest contains no structural look-ahead bias.
+
+---
+
+# 16. Required Structure Tests
+
+The Phase 1 implementation should include dedicated tests for:
+
+* pivot-high detection
+* pivot-low detection
+* 20-left / 2-right pivot behavior
+* delayed pivot confirmation
+* initial trend construction
+* HH continuation
+* HL construction
+* LL continuation
+* LH construction
+* bullish → bearish transition
+* bearish → bullish transition
+* pending structure confirmation
+* structural level timestamps
+* structure confirmation timestamps
+* FVG relationship to structural highs
+* FVG relationship to structural lows
+* no-look-ahead behavior
+
+A particularly important test should prove:
+
+> A pivot cannot affect a MACROS event before its `rightLen` confirmation bars have completed.
+
+---
+
+# Research Objective
+
+The structural component should first be reproduced faithfully from the PineScript implementation.
+
+Only after behavioral equivalence has been established should alternative market-structure definitions or parameters be researched.
+
+The initial objective is therefore:
+
+```text
+PineScript behavior
+        ↓
+deterministic reference tests
+        ↓
+Python/C++ implementation
+        ↓
+equivalent market-structure stream
+        ↓
+FVG + structure event dataset
+        ↓
+baseline MACROS research
+```
+
+Do not optimize or simplify the market-structure algorithm during the initial port.
+
+First establish behavioral equivalence.
